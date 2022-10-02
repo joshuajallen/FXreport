@@ -1,0 +1,505 @@
+---
+title: "BRE daily report"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: lumen 
+---
+
+<style>
+
+.navbar-brand {
+  display: grid;
+  margin: auto;
+  padding: 5px;
+}
+
+.navbar-author {
+  margin-left: 0px;
+}
+</style>
+
+```{r setup, include=FALSE}
+
+#-----------------------------------------------------------------------
+## FILE        : UI.R - USER INTERFACE             DATE : 19/08/2020
+##
+## CREATED BY  : Joshua Allen
+##
+## DESCRIPTION : daily report for monitoring account A benchmark activity: 
+##               including nostro balances, 
+##               repo specials, 
+##               short covers 
+##
+
+
+# source environment files
+source("\\\\istdba/BuildArchive/ShinyApps/EnvironmentScript/EnvironmentScript_Latest/LOCAL/Artifactory/environment.R")
+
+# boe checkpoint
+checkpoint_date <- "2022-01-01"
+message(paste0("checkpoint_date: ", checkpoint_date))
+boeCheckpoint(checkpoint_date, scanForPackages = FALSE)
+
+# load packages -----------------------------------------------------
+
+
+library(DT)
+library(dplyr)
+library(formattable)
+library(flexdashboard)
+library(httr)
+library(lubridate)
+library(purrr)
+library(plotly)
+library(Rblpapi)
+library(scales)
+library(stringr)
+library(zoo)
+
+# Load a library so that boeCheckpoint won't complain about it being missing
+FIRVr_str <- "library(FIRVr, lib.loc = 'N:/Offdata/RM/_R code repository/RMPackages/_R4.0')"
+eval(parse(text=FIRVr_str))
+
+options(digits = 2)
+options(DT.fillContainer = T)
+options(scipen = 999)
+
+# source functions ---------------------------------------------------------
+
+source(file.path("../functions/functions.R"))
+source(file.path("../functions/openlink_api.R"))
+
+
+# set parameters -------------------------------------------------------
+currencies <- c("CAD", "AUD", "USD", "EUR", "JPY")
+date <- Sys.Date()
+folder_date <- format(date, "%y%b%d")
+file_date <- format(date, "%d-%b-%y")
+ex_day <- 0
+lightgreen <- "#d5f7d5"
+lightred <- "#f7d7d5"
+
+openlink_data_path <- file.path("G:", "DB_Data", "OLFLIVE", "outdir", "Daily_Pnl_Reports")
+nostro_report <- file.path("G:/DB_Data/OLFLIVE/outdir/reports", folder_date, "RTPE_Cash_By_Nostro_Export.csv")
+
+# source modules for report ----------------------------------------------
+source("../modules/get_data.R")
+source("../modules/repo_shorts.R")
+source("../modules/repo_covers.R")
+source("../modules/fx_swaps.R")
+```
+
+<script>
+$(document).ready(function(){
+    $('[data-toggle="popover"]').popover(); 
+});
+</script>
+
+Nostro Accounts {data-icon="fa-receipt"}
+=====================================  
+
+Column {data-width=75}
+-------------------------------------
+
+### Nostro breaks 
+
+```{r NOSTRO_BREAK, results='asis', echo = FALSE}
+
+if (length(nostro_errors) < 1) {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "green",
+    paste0("There are no nostro breaks in the next 10 business days")
+  ))
+} else {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "red",
+    paste0(
+      "There is ",
+      length(nostro_errors),
+      " breaks to check in the next 10 business days for the following currencies: ",
+      paste0(unique(errors$Currency), collapse = ", ")
+    ), 
+    "."
+  ))
+}
+
+```
+
+### Nostro warnings 
+
+```{r NOSTRO_WARN, results='asis', echo = FALSE}
+
+if (length(nostro_warnings) < 1) {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "green",
+    paste0("There are no nostro warnings (within 10% of min/max limit) in the next 10 business days")
+  ))
+} else {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "red",
+    paste0(
+      "There are ",
+      length(nostro_warnings),
+      " to check for the following currencies: ",
+      paste0(unique(warnings$Currency), collapse = ", "),
+      "."
+    )
+  ))
+}
+
+
+
+```
+
+### Repo shorts 
+
+```{r SHORT_WARN, results='asis', echo = FALSE}
+
+if (length(shorts) < 1) {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "green",
+    paste0("There are no repo shorts to cover in the next 10 business days")
+  ))
+} else {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "red",
+    paste0(
+      "There are ",
+      nrow(shorts),
+      " repo short covers in the next 10 business days for the following currency portfolios: ",
+      paste0(unique(shorts$CURRENCY), collapse = ", "),
+      ".", 
+      " The first is out of ", paste0(shorts$T_PLUS[1]), 
+      "."
+    )
+  ))
+}
+
+
+
+```
+
+### Repo specials 
+
+```{r SPECIAL_WARN, results='asis', echo = FALSE}
+
+if (length(specials) < 1) {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "green",
+    paste0("There are no repo specials rolling off in the next 10 business days")
+  ))
+} else {
+  cat(sprintf(
+    "<span style = \"color: %s;\">%s</span>\n\n",
+    "red",
+    paste0(
+      "There are ",
+      length(unique(specials$TICKER)),
+      " repo specials rolling off in the next 10 business days for the following currency portfolios: ",
+      paste0(unique(specials$CURRENCY), collapse = ", "),
+      "."
+    )
+  ))
+}
+
+
+
+```
+
+
+Column {.tabset}
+-------------------------------------
+
+### Nostro (total balances)
+
+```{r NOSTRO_TOTAL,  results='asis',  out.height= "85%"}
+
+ism <- nostro_dt %>% lapply(class) %>% unlist == "numeric"
+chr <- nostro_dt %>% lapply(class) %>% unlist == "character"
+
+df <-  dplyr::filter(nostro_dt, account == "Total")
+
+DT::datatable(
+  df,
+   extensions = c("RowGroup", "Buttons", "Scroller"),
+  options = list(pageLength = 20,
+                 dom = 't'),
+  rownames = FALSE, 
+  selection = "none"
+) %>%
+  formatStyle(chr,
+              fontWeight = "bold") %>%
+  formatStyle(ism, color = styleInterval(0, c("red", "black"))) %>%
+  formatStyle(ism, backgroundColor = styleInterval(0, c(lightred, lightgreen))) %>%
+  formatStyle("WithinLimit",
+              fontWeight = "bold",
+              color = styleEqual(c("Yes", "No"), c("green", "red"))) %>%
+  formatCurrency(ism ,
+                 currency = "",
+                 interval = 3,
+                 mark = ",")  %>%
+  formatRound(ism, digits = 0)
+
+```
+
+
+### Nostro (all accounts)
+
+```{r NOSTRO_ALL}
+
+
+ism <- nostro_dt %>% lapply(class) %>% unlist == "numeric"
+chr <- nostro_dt %>% lapply(class) %>% unlist == "character"
+
+DT:: datatable(
+  nostro_dt,
+  extensions = c("RowGroup", "Buttons", "Scroller"),
+  rownames = FALSE,
+  filter = "top", 
+  escape = FALSE,
+  selection = "none",
+  options = list(
+    pageLength = 20,
+    selection = "none",
+    rowGroup = list(
+      dataSrc = 0
+    ),
+    fnDrawCallback = htmlwidgets::JS(
+      "function() { HTMLWidgets.staticRender(); }"
+    )
+  )
+) %>% 
+  formatStyle(
+    chr,
+    fontWeight = "bold"
+  ) %>% 
+  formatStyle(ism, color = styleInterval(0, c("red", "black"))) %>%
+  formatStyle(ism, backgroundColor = styleInterval(0, c(lightred, lightgreen))) %>%
+  formatStyle("WithinLimit",
+              fontWeight = "bold",
+              color = styleEqual(c("Yes", "No"), c("green", "red")))
+
+
+
+```
+
+
+Repo Specials {data-icon="fa-shopping-cart"}
+=====================================  
+
+Column {data-width=50}
+-------------------------------------
+
+### List of existing specials
+
+```{r, results='asis', echo = FALSE}
+
+RSGC <- OL_specials %>% 
+  dplyr::ungroup() %>% 
+  dplyr::select(TICKER, CURRENCY) %>%
+  dplyr::mutate(instruments =  gsub(pattern = "_", " ", TICKER), 
+                issuer_coupon = gsub('.{6}$', '', instruments), 
+                date = stringr:: str_sub(instruments, - 6, - 1), 
+                day = stringr:: str_sub(date, 1, 2),
+                month = stringr:: str_sub(date, 3, 4), 
+                year = stringr:: str_sub(date, 5, 6), 
+                date = paste0(month, "/", day, "/", year)
+                ) %>% 
+  dplyr::mutate(SECURITY = paste0(issuer_coupon, date)) %>% 
+  dplyr::select(SECURITY, CURRENCY) %>% 
+  dplyr::arrange(CURRENCY)
+
+
+cat(sprintf(
+  "<span style = \"color: %s;\">%s</span>\n\n",
+  "#00008b",
+  paste0(unique(RSGC$SECURITY), collapse = " <br> ")
+))
+
+
+
+```
+
+
+Column {.tabset}
+-------------------------------------
+
+### Repo Specials (by Currency)
+
+```{r RSGC_CURRENCY,  results='asis',  out.height= "85%"}
+
+x <- specials
+final_col <- rep(FALSE, ncol(x))
+final_col[[length(final_col)]] <- TRUE
+
+datatable(
+  x,
+  extensions = c("RowGroup", "Buttons", "Scroller"), 
+  rownames = FALSE,
+  filter = "top", 
+  options = list(
+    rowGroup = list(
+      dataSrc = 0
+    ),
+    pageLength = nrow(x),
+    paging = FALSE, 
+    ordering = FALSE,
+    lengthChange = FALSE,
+    searching = FALSE,
+    info = FALSE
+  )
+) %>% 
+  formatStyle("Change on day", color = styleInterval(0, c("red", "black"))) %>% 
+  formatStyle("POSITION", color = styleInterval(0, c("red", "black")))   %>% 
+  formatStyle(final_col, backgroundColor = lightgreen)
+
+```
+
+### Repo Specials (by Security)
+
+```{r RSGC_SECURITY,  results='asis',  out.height= "85%"}
+
+x <- specials
+final_col <- rep(FALSE, ncol(x))
+final_col[[length(final_col)]] <- TRUE
+
+datatable(
+  x,
+  extensions = c("RowGroup", "Buttons", "Scroller"), 
+  rownames = FALSE,
+  filter = "top", 
+  options = list(
+    rowGroup = list(
+      dataSrc = 1
+    ),
+    pageLength = nrow(x),
+    paging = FALSE, 
+    ordering = FALSE,
+    lengthChange = FALSE,
+    searching = FALSE,
+    info = FALSE
+  )
+) %>% 
+  formatStyle("Change on day", color = styleInterval(0, c("red", "black"))) %>% 
+  formatStyle("POSITION", color = styleInterval(0, c("red", "black")))  %>% 
+  formatStyle(final_col, backgroundColor = lightgreen)
+
+```
+
+
+Repo Short Covers {data-icon="fa-umbrella"}
+=====================================  
+
+Column {data-width=1200}
+-------------------------------------
+
+### Upcoming shorts to cover (up to T + 10)
+
+```{r SHORT_COVERS,  results='asis',  out.height= "85%"}
+
+x <- shorts
+final_col <- rep(FALSE, ncol(x))
+final_col[[length(final_col)]] <- TRUE
+
+datatable(
+  x,
+  extensions = c("RowGroup", "Buttons", "Scroller"), 
+  rownames = FALSE,
+  filter = "top", 
+  options = list(
+    rowGroup = list(
+      dataSrc = 0
+    ),
+    pageLength = nrow(x),
+    paging = FALSE, 
+    ordering = FALSE,
+    lengthChange = FALSE,
+    searching = FALSE,
+    info = FALSE
+  )
+) %>% 
+  formatStyle(final_col, color = styleInterval(0, c("red", "black"))) %>% 
+  formatStyle(final_col, backgroundColor = lightgreen)
+
+```
+
+FX swaps {data-icon="fa-receipt"}
+=====================================  
+
+Column {data-width=300}
+-------------------------------------
+
+
+### Funding out of USD 
+
+```{r FX_USD,  results='asis',  out.height= "85%"}
+
+plot_data <- dplyr::filter(fx_swap_returns, base == "USD")
+plot_term_structure(plot_data, xlab = "maturity", ylab = "total_return", fill = "currency", polynomial_order = 3)
+
+```
+
+### FX swap table (USD)
+
+```{r FX_USD_DT,  results='asis',  out.height= "100%"}
+
+make_fx_datatable(dplyr::filter(fx_dt, base == "USD"))
+
+```
+
+
+
+
+Column {data-width=300}
+-------------------------------------
+
+### Funding out of EUR 
+
+```{r FX_EUR,  results='asis',  out.height= "85%"}
+
+plot_data <- dplyr::filter(fx_swap_returns, base == "EUR")
+plot_term_structure(plot_data, xlab = "maturity", ylab = "total_return", fill = "currency", polynomial_order = 3)
+
+```
+
+
+### FX swap table (EUR)
+
+```{r FX_EUR_DT,  results='asis',  out.height= "100%"}
+
+make_fx_datatable(dplyr::filter(fx_dt, base == "EUR"))
+
+```
+
+
+Column {data-width=300}
+-------------------------------------
+
+### Funding out of CAD 
+
+```{r FX_cAD,  results='asis',  out.height= "85%"}
+
+plot_data <- dplyr::filter(fx_swap_returns, base == "CAD")
+plot_term_structure(plot_data, xlab = "maturity", ylab = "total_return", fill = "currency", polynomial_order = 3)
+
+```
+
+
+### FX swap table (CAD)
+
+```{r FX_CAD_DT,  results='asis',  out.height= "100%"}
+
+make_fx_datatable(dplyr::filter(fx_dt, base == "CAD"))
+
+```
+
